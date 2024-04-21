@@ -1,0 +1,248 @@
+---
+title: "EDA Notebook"
+author: "Gustav"
+output: 
+  html_document:
+    toc: true  
+    theme: united  
+    fig_caption: true  
+    highlight: tango  
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Introduction
+> Our business problem is to accurately forecast demand of Swire’s limited-release products, preventing both out-of-stocks and overproduction, and ensuring optimal production quantities that align with evolving consumer preferences. Achieving this goal will help Swire drive revenue growth and cost savings, expand market reach, and maintain a competitive edge in response to evolving consumer preferences and industry dynamics.
+
+## Analytics approach
+> This problem is a supervised regression problem, where the target variable is units sold over a period of time as a metric for swire's demand. The questions posed by Swire vary in character, but are all based on a desire to predict volume of sales (demand) over a period of time. The EDA and modeling process will explore the data available and a variety of modeling methods to determine the most useful inputs and methods. 
+
+
+## Questions to guide exploration.
+
+> Can we make more meaning out of unit_sales if we group it by categorical data?
+
+> Can we manipulate unit_sales and dollars_sales to find overall sales and average prices for grouped data?
+
+> Will sum of overall dollar_sales be a better metric for demand and sum of unit_sales?
+
+> Will the average price drop with larger orders?
+
+> Will the average price be consistent or do we have outliers?
+
+
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(message=FALSE, warning=FALSE)
+```
+
+## Load libraries 
+
+```{r, message=FALSE, warning=FALSE}
+# Libraries
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, skimr, GGally, plotly, viridis, 
+               caret, DT, data.table, lightgbm, readr, e1071, 
+               ranger, parallel, mice, corrplot, ggplot2)
+library(dplyr)
+library(C50)
+library(e1071)
+library(psych)
+library(caret)
+library(rminer)
+library(rmarkdown)
+#library(tictoc) 
+library(tidyverse)
+library(matrixStats)
+library(kableExtra)
+#tic()
+
+setwd("C:/Users/u1295825/OneDrive - University of Utah/Documents/Capstone2")
+
+#Data
+data <- read.csv("FACT_MARKET_DEMAND.csv")
+
+
+```
+## Random sampling for easier EDA
+> To to the large data, we will take a random sample for easier exploration, before running the complete for final results
+
+```{r}
+# no missing loumns in data as a whole
+colSums(is.na(data)) 
+
+set.seed(50)
+sdf <- data %>% sample_n(20000)
+
+```
+
+## Data overview of target variable
+> Quick look at unit sales to various categorical data
+
+```{r}
+str(sdf)
+
+
+sdf %>%
+  group_by(MARKET_KEY)%>%
+  summarise(n=sum(UNIT_SALES))%>%
+  mutate(percentage=n/sum(n))%>%
+  arrange(desc(n))
+
+
+sdf %>%
+  group_by(CALORIC_SEGMENT)%>%
+  summarise(n=sum(UNIT_SALES))%>%
+  mutate(percentage=n/sum(n))%>%
+  arrange(desc(n))
+
+sdf %>%
+  group_by(CATEGORY)%>%
+  summarise(n=sum(UNIT_SALES))%>%
+  mutate(percentage=n/sum(n))%>%
+  arrange(desc(n))
+
+sdf %>%
+  group_by(BRAND)%>%
+  summarise(n=sum(UNIT_SALES))%>%
+  mutate(percentage=n/sum(n))%>%
+  arrange(desc(n))
+
+
+sdf %>%
+  group_by(MANUFACTURER)%>%
+  summarise(n=sum(UNIT_SALES))%>%
+  mutate(percentage=n/sum(n))%>%
+  arrange(desc(n))
+
+ggplot(data = sdf,aes(UNIT_SALES))+
+  geom_histogram()
+
+
+```
+
+> Looking at the overall structure of the data, we can see that there are a lot of categorical data. Our target variable, unit_sales is a number. Interesting enough, this is not an integer.
+
+> Grouping by market key, we can see the amount of unit sales per market. This may be abstract now, but could give interesting information as we connect market_key with more familier area codes.
+
+> Regular seems to sell twice as much as Diet/Light.
+
+> SSD is the most popular category with Energy being second.
+
+> Swire-CC is one of the largest manufacturers
+
+> The histogram shows that there are some really large orders (unit sales) in the dataset that could be considered extreme values.
+
+## Discovering the average unit price
+
+> We want to discover what relationship there is between unit sales and dollar sales. Is there a decrease in the average unit price when unit sales increase. Does the average unit price have a relationship with any of the other data points? Also, we are looking for outliers and consitency in the data.
+
+```{r Unit and Dollar Sales}
+# first, lets find the average price per unit
+sum_units = sum(sdf$UNIT_SALES)
+sum_dollar = sum(sdf$DOLLAR_SALES)
+avg_price = sum_dollar/sum_units
+avg_price
+
+# average unit price is $3.42
+
+# Is the average unit price higher for smaller units?
+sales_df <- sdf %>%
+  group_by(UNIT_SALES)%>%
+  summarise(n = n(),
+            sum_sales=sum(DOLLAR_SALES))%>%
+  mutate(avg_price = sum_sales/(UNIT_SALES*n))
+
+sales_df
+
+# sales average prices ranges from 6.5 to ~2 per unit
+
+ggplot(data = sales_df,aes(UNIT_SALES, avg_price))+
+  geom_point()
+
+# There are some outliers for average price
+
+# lets look at avg_price over 7 for outliers:
+
+filtered_df <- sales_df %>% filter(avg_price > 7)%>% arrange(desc(avg_price))
+filtered_df
+
+# It looks like most of the unit sales with average prices over 7 are special orders (just one quantity of the exact unit sales)
+
+# There are some sales that are not whole numbers, but are very small in quantity. This could be a typo or just an error
+
+# it seems to be random, so imputing may not be reasonable
+# we also do not want any imputation into a target variable
+# lets look closer into the larger unit pices
+sdf$AVG_PRICE <- sdf$DOLLAR_SALES / sdf$UNIT_SALES
+
+sdf%>%filter(AVG_PRICE > 20) %>% arrange(AVG_PRICE)
+
+
+# it looks like package for each unit is typically 12SMALL 24ONE CUP and ENERGY Category, which may indicate that the unit price actually is not that far off
+
+# lets group data for each of the segments
+
+category_df <- sdf %>%
+  group_by(CATEGORY)%>%
+  summarise(n = n(),
+            avg_sales=mean(AVG_PRICE))
+
+category_df 
+# ENERGY has higher avg sales than the other categories
+
+# look into package relationships to average salesprice
+package_df <- sdf %>%
+  group_by(PACKAGE)%>%
+  summarise(n = n(),
+            avg_sales=mean(AVG_PRICE))%>%
+  arrange(desc(avg_sales))
+
+package_df
+# there is definitely a reltaionship
+# lets look at the boxplots for top 3
+
+package_top <- sdf %>% filter(PACKAGE %in% c('8SMALL 24ONE CUP', '16SMALL 24ONE CUP', '12SMALL 24ONE PLASTICS JUG'))
+
+package_top
+
+ggplot(data = package_top,aes(x = PACKAGE, y = AVG_PRICE))+
+  geom_boxplot()+
+    theme_minimal() +
+  labs(title = "Boxplot of Average price for top 3 Package categories",
+       x = "Package",
+       y = "Average price")
+
+
+```
+
+> The results from exploring the average unit price gives us some interesting information. 
+
+> We can see how the average unit price depends mostly on the quantity of the order, but also on the packaging. It also seems that the energy soda is more expensive than other types.There are also some outliers, that most likely are extremes and not errors. We do not want to impute, but rather observe these outliers to accurately predict. 
+
+# Making units to integers
+> Due to many rows of unit_sales having fractions of numbers, where the average unit price gets very high, we have decided to filter data to only include rows where unit_sales are integers
+
+```{r}
+
+sdf_filter <- sdf[sdf$UNIT_SALES %% 1 == 0,]
+min(sdf$UNIT_SALES) # lowest is a fraction lower than 0
+min(sdf_filter$UNIT_SALES) # lowest is 0
+```
+
+
+```{r}
+
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+
