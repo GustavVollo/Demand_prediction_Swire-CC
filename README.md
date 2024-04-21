@@ -1,5 +1,5 @@
 # Demand Prediction For Swire Coca-Cola
-## Case competition as a capstone project at the University of Utah MSBA program.
+Case competition as a capstone project at the University of Utah MSBA program.
 ### Project Overview: Enhancing Production Efficiency with ARIMA Modeling
 The Swire Coca-Cola project focuses on forecasting demand for limited-release products using an ARIMA model to prevent overproduction and shortages. This approach optimizes production to match evolving consumer preferences, enhancing revenue growth and cost efficiency. The notebook details the modeling, data preparation, and validation efforts to support strategic decision-making.
 
